@@ -215,11 +215,13 @@ describe('scheduled task directory navigation', () => {
             expect(runTwoSlot.scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' });
             expect(result.ok).toBe(true);
             if (!result.ok) throw new Error(result.message);
-            expect(result.anchor).toBe(runTwoSlot);
+            const runTwoAssistantRoot = runTwoSlot.querySelector('[data-turn="assistant"]');
+            if (!(runTwoAssistantRoot instanceof HTMLElement)) throw new Error('scheduled task assistant root is missing');
+            expect(result.anchor).toBe(runTwoAssistantRoot);
             expect(result.round.position).toBe(2);
             expect(result.round.userMessageId).toBeNull();
             expect(result.round.assistantMessageId).toBe('assistant-message-2');
-            expect(surface.readFrame().obtainedTurns[1]?.materialization?.assistantElement).toBe(runTwoSlot);
+            expect(surface.readFrame().obtainedTurns[1]?.materialization?.assistantElement).toBe(runTwoAssistantRoot);
         } finally {
             surface.dispose();
             disposeChatGPTPageIndex(adapter);
