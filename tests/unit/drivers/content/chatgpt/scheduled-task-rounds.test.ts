@@ -11,12 +11,24 @@ function installBridge(): void {
     window.eval(readFileSync(BRIDGE_PATH, 'utf-8'));
 }
 
-function message(id: string, role: string, text: string): Record<string, unknown> {
+function message(
+    id: string,
+    role: string,
+    text: string,
+    createTime?: number,
+): Record<string, unknown> {
     return {
         id,
         author: { role },
         content: { content_type: 'text', parts: [text] },
+        ...(createTime === undefined ? {} : { create_time: createTime }),
     };
+}
+
+function scheduledTaskLabel(createTime: number): string {
+    const date = new Date(createTime * 1000);
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return `定时任务 · ${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function requestSnapshot(conversationId: string): Promise<any> {
@@ -65,12 +77,12 @@ describe('scheduled task conversation rounds', () => {
                 'assistant-node-2': {
                     id: 'assistant-node-2',
                     parent: 'assistant-node-1',
-                    message: message('assistant-message-2', 'assistant', 'Day 2 brief'),
+                    message: message('assistant-message-2', 'assistant', 'Day 2 brief', 1717245000),
                 },
                 'assistant-node-3': {
                     id: 'assistant-node-3',
                     parent: 'assistant-node-2',
-                    message: message('assistant-message-3', 'assistant', 'Day 3 brief'),
+                    message: message('assistant-message-3', 'assistant', 'Day 3 brief', 1717331400),
                 },
             },
         };
@@ -102,6 +114,11 @@ describe('scheduled task conversation rounds', () => {
             'Day 1 brief',
             'Day 2 brief',
             'Day 3 brief',
+        ]);
+        expect(response.snapshot.rounds.map((round: any) => round.userPrompt)).toEqual([
+            'Send the daily research brief',
+            scheduledTaskLabel(1717245000),
+            scheduledTaskLabel(1717331400),
         ]);
     });
 });
