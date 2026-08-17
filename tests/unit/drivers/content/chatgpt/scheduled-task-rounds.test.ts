@@ -48,6 +48,30 @@ function requestSnapshot(conversationId: string): Promise<any> {
     });
 }
 
+function buildOrdinaryConversationPayload(conversationId: string, roundCount: number) {
+    const mapping: Record<string, unknown> = {
+        root: { id: 'root', parent: null, message: null },
+    };
+    let parent = 'root';
+    for (let index = 0; index < roundCount; index += 1) {
+        const ordinal = index + 1;
+        const userNode = `user-node-${ordinal}`;
+        const assistantNode = `assistant-node-${ordinal}`;
+        mapping[userNode] = {
+            id: userNode,
+            parent,
+            message: message(`user-message-${ordinal}`, 'user', `Prompt ${ordinal}`),
+        };
+        mapping[assistantNode] = {
+            id: assistantNode,
+            parent: userNode,
+            message: message(`assistant-message-${ordinal}`, 'assistant', `Answer ${ordinal}`),
+        };
+        parent = assistantNode;
+    }
+    return { conversation_id: conversationId, current_node: parent, mapping };
+}
+
 describe('scheduled task conversation rounds', () => {
     beforeEach(() => {
         (window as any).__AIMD_CHATGPT_CONVERSATION_BRIDGE__?.dispose?.();
@@ -120,6 +144,60 @@ describe('scheduled task conversation rounds', () => {
             scheduledTaskLabel(1717245000),
             scheduledTaskLabel(1717331400),
         ]);
+    });
+
+    it('selects the richest graph when one response contains a rooted one-round prefix first', async () => {
+        const conversationId = 'ordinary-long-conversation-12345678';
+        history.replaceState({}, '', `/c/${conversationId}`);
+        const oneRound = buildOrdinaryConversationPayload(conversationId, 1);
+        const elevenRounds = buildOrdinaryConversationPayload(conversationId, 11);
+        const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+            data: { candidates: [oneRound, elevenRounds] },
+        }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        Object.defineProperty(window, 'fetch', { configurable: true, value: fetchMock });
+        vi.stubGlobal('fetch', fetchMock);
+
+        installBridge();
+        await window.fetch(`/backend-api/conversation/${conversationId}`);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        const response = await requestSnapshot(conversationId);
+
+        expect(response.ok).toBe(true);
+        expect(response.snapshot.rounds).toHaveLength(11);
+        expect(response.snapshot.rounds[0]?.userPrompt).toBe('Prompt 1');
+        expect(response.snapshot.rounds[10]?.userPrompt).toBe('Prompt 11');
+        expect(response.snapshot.branchKey).toBe('assistant-node-11');
+    });
+
+    it('does not let a later rooted prefix replace a richer known branch', async () => {
+        const conversationId = 'ordinary-monotonic-conversation-12345678';
+        history.replaceState({}, '', `/c/${conversationId}`);
+        const elevenRounds = buildOrdinaryConversationPayload(conversationId, 11);
+        const oneRound = buildOrdinaryConversationPayload(conversationId, 1);
+        let requestIndex = 0;
+        const fetchMock = vi.fn(async () => new Response(JSON.stringify(
+            requestIndex++ === 0 ? elevenRounds : oneRound,
+        ), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        Object.defineProperty(window, 'fetch', { configurable: true, value: fetchMock });
+        vi.stubGlobal('fetch', fetchMock);
+
+        installBridge();
+        await window.fetch(`/backend-api/conversation/${conversationId}`);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        await window.fetch(`/backend-api/conversation/${conversationId}`);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        const response = await requestSnapshot(conversationId);
+
+        expect(response.ok).toBe(true);
+        expect(response.snapshot.rounds).toHaveLength(11);
+        expect(response.snapshot.rounds[10]?.assistantMessageId).toBe('assistant-message-11');
+        expect(response.snapshot.branchKey).toBe('assistant-node-11');
     });
 });
 

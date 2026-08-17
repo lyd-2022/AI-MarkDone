@@ -1,6 +1,6 @@
 (() => {
   const BRIDGE_KEY = '__AIMD_CHATGPT_CONVERSATION_BRIDGE__';
-  const BRIDGE_VERSION = 5;
+  const BRIDGE_VERSION = 6;
   const existingBridge = window[BRIDGE_KEY];
   if (existingBridge?.version === BRIDGE_VERSION) return;
   existingBridge?.dispose?.();
@@ -554,6 +554,41 @@
     return false;
   }
 
+  /**
+   * ChatGPT can hydrate one long conversation as several graph-shaped
+   * payloads in the same response. Prefer the candidate that proves the
+   * richest visible branch instead of accepting whichever wrapper appears
+   * first in breadth-first traversal order.
+   */
+  function rankObservedGraphPayloads(payloads, expectedConversationId) {
+    const ranked = [];
+    for (const payload of payloads) {
+      const payloadConversationId = getPayloadConversationId(payload);
+      const currentNodeId = getPayloadCurrentNodeId(payload);
+      const mapping = readRecord(payload?.mapping);
+      if (
+        (payloadConversationId && payloadConversationId !== expectedConversationId)
+        || !currentNodeId
+        || !mapping
+      ) continue;
+
+      const branchNodes = buildBranchNodesFromMapping(mapping, currentNodeId);
+      const projection = branchNodes ? buildRoundsFromPayload(payload) : null;
+      ranked.push({
+        payload,
+        roundCount: projection?.rounds?.length || 0,
+        branchDepth: branchNodes?.length || 0,
+        mappingNodeCount: Object.keys(mapping).length,
+      });
+    }
+    ranked.sort((left, right) => (
+      right.roundCount - left.roundCount
+      || right.branchDepth - left.branchDepth
+      || right.mappingNodeCount - left.mappingNodeCount
+    ));
+    return ranked.map((candidate) => candidate.payload);
+  }
+
   function rememberObservedPayload(expectedConversationId, payload, requestSequence) {
     if (!payload || typeof payload !== 'object') return false;
     const payloadConversationId = getPayloadConversationId(payload);
@@ -567,18 +602,22 @@
     ) return false;
 
     const previous = bridgeState.graphsByConversation.get(conversationId);
-    const isCompletePayload = buildBranchNodesFromMapping(mapping, currentNodeId) !== null;
     const isNewestCapture = !previous || requestSequence >= previous.requestSequence;
-    const mergedMapping = isCompletePayload && isNewestCapture
-      ? mapping
-      : mergeObservedMapping(previous?.mapping, mapping, !isNewestCapture);
+    // Preserve all previously observed nodes. A later response can be a
+    // structurally rooted prefix of the active branch, so replacing the
+    // mapping merely because it reaches root would erase valid history.
+    const mergedMapping = mergeObservedMapping(previous?.mapping, mapping, !isNewestCapture);
+    const regressesToKnownAncestor = Boolean(
+      previous
+      && isNewestCapture
+      && currentNodeId !== previous.currentNodeId
+      && isNodeAncestor(mergedMapping, currentNodeId, previous.currentNodeId)
+    );
     const nextCurrentNodeId = !previous
       ? currentNodeId
-      : !isNewestCapture
+      : !isNewestCapture || regressesToKnownAncestor
         ? previous.currentNodeId
-        : !isCompletePayload && isNodeAncestor(mergedMapping, currentNodeId, previous.currentNodeId)
-          ? previous.currentNodeId
-          : currentNodeId;
+        : currentNodeId;
     const captureSequence = ++bridgeState.captureSequence;
     bridgeState.graphsByConversation.delete(conversationId);
     bridgeState.graphsByConversation.set(conversationId, {
@@ -619,7 +658,10 @@
     if (!contentType.toLowerCase().includes('json')) return;
     try {
       const rawPayload = await response.clone().json();
-      const payloads = findObservedGraphPayloads(rawPayload, expectedConversationId);
+      const payloads = rankObservedGraphPayloads(
+        findObservedGraphPayloads(rawPayload, expectedConversationId),
+        expectedConversationId,
+      );
       for (const payload of payloads) {
         if (rememberObservedPayload(conversationId, payload, requestSequence)) break;
       }
