@@ -172,10 +172,26 @@ describe('scheduled task directory navigation', () => {
     beforeEach(() => {
         document.body.innerHTML = `
           <main>
-            <div data-turn-id-container="user-message"></div>
-            <div data-turn-id-container="assistant-message-1"></div>
-            <div id="scheduled-run-2" data-turn-id-container="assistant-message-2"></div>
-            <div data-turn-id-container="assistant-message-3"></div>
+            <div data-turn-id-container="user-message">
+              <section data-turn="user">
+                <div data-message-author-role="user" data-message-id="user-message"></div>
+              </section>
+            </div>
+            <div data-turn-id-container="assistant-message-1">
+              <section data-turn="assistant">
+                <div data-message-author-role="assistant" data-message-id="assistant-message-1"></div>
+              </section>
+            </div>
+            <div id="scheduled-run-2" data-turn-id-container="assistant-message-2">
+              <section data-turn="assistant">
+                <div data-message-author-role="assistant" data-message-id="assistant-message-2"></div>
+              </section>
+            </div>
+            <div data-turn-id-container="assistant-message-3">
+              <section data-turn="assistant">
+                <div data-message-author-role="assistant" data-message-id="assistant-message-3"></div>
+              </section>
+            </div>
           </main>
         `;
     });
@@ -184,6 +200,10 @@ describe('scheduled task directory navigation', () => {
         const { materializeChatGPTConversationTarget } = await import(
             '@/drivers/content/chatgpt/ChatGPTConversationNavigation'
         );
+        const {
+            collectChatGPTDomRoundRefs,
+            disposeChatGPTPageIndex,
+        } = await import('@/drivers/content/chatgpt/domConversationDiscovery');
         const { frame: initialFrame } = buildScheduledTaskSurfaceFrame();
         const runTwoSlot = document.getElementById('scheduled-run-2') as HTMLElement;
         runTwoSlot.scrollIntoView = vi.fn();
@@ -197,6 +217,13 @@ describe('scheduled task directory navigation', () => {
             getToolbarAnchorElement: () => null,
             isStreamingMessage: () => false,
         } as any;
+        const domRounds = collectChatGPTDomRoundRefs(adapter);
+        expect(domRounds).toMatchObject([
+            { identity: { assistantMessageId: 'assistant-message-1', userMessageId: 'user-message' } },
+            { identity: { assistantMessageId: 'assistant-message-2', userMessageId: null }, source: 'assistant-only' },
+            { identity: { assistantMessageId: 'assistant-message-3', userMessageId: null }, source: 'assistant-only' },
+        ]);
+
         const surface = {
             readFrame: () => frame,
             subscribeFrame: (listener: (next: any) => void) => {
@@ -224,25 +251,29 @@ describe('scheduled task directory navigation', () => {
             },
         } as any;
 
-        const result = await materializeChatGPTConversationTarget(adapter, {
-            position: 2,
-            roundId: 'assistant-node-2',
-            userMessageId: null,
-            assistantMessageId: 'assistant-message-2',
-        }, {
-            surface,
-            timeoutMs: 100,
-        });
-
-        expect(runTwoSlot.scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' });
-        expect(result).toMatchObject({
-            ok: true,
-            anchor: runTwoSlot,
-            round: {
+        try {
+            const result = await materializeChatGPTConversationTarget(adapter, {
                 position: 2,
+                roundId: 'assistant-node-2',
                 userMessageId: null,
                 assistantMessageId: 'assistant-message-2',
-            },
-        });
+            }, {
+                surface,
+                timeoutMs: 100,
+            });
+
+            expect(runTwoSlot.scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' });
+            expect(result).toMatchObject({
+                ok: true,
+                anchor: runTwoSlot,
+                round: {
+                    position: 2,
+                    userMessageId: null,
+                    assistantMessageId: 'assistant-message-2',
+                },
+            });
+        } finally {
+            disposeChatGPTPageIndex(adapter);
+        }
     });
 });
