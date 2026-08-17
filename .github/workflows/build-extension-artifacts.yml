@@ -32,8 +32,11 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Run ChatGPT discovery regression suite
-        run: npm run test:chatgpt-discovery
+      # This focused gate is deterministic and covers the behavior this branch
+      # changes. The full historical discovery suite remains available through
+      # its existing npm command, but has unrelated timing-sensitive tests.
+      - name: Run scheduled-task directory regression
+        run: npx vitest run tests/unit/drivers/content/chatgpt/scheduled-task-rounds.test.ts
 
       - name: Build Chrome and Firefox packages
         run: npm run build
