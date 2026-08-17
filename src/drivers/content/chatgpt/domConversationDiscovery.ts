@@ -264,24 +264,6 @@ function pushUnique(nodes: HTMLElement[], node: HTMLElement | null | undefined):
     if (node && !nodes.includes(node)) nodes.push(node);
 }
 
-/**
- * Adjacent assistant surfaces can be secondary host shells for one logical
- * message or independent scheduled-task runs. Only coalesce them when the
- * current surface does not prove a different assistant message identity.
- */
-function shouldExtendPreviousAssistantSurface(
-    adapter: SiteAdapter,
-    previousRound: ChatGPTDomRoundRef,
-    assistantRootEl: HTMLElement,
-): boolean {
-    const previousAssistantMessageId = previousRound.identity.assistantMessageId?.trim() ?? '';
-    const currentAssistantMessageEl = findAssistantMessage(adapter, assistantRootEl);
-    const currentAssistantMessageId = readMessageId(currentAssistantMessageEl, assistantRootEl)?.trim() ?? '';
-    return !previousAssistantMessageId
-        || !currentAssistantMessageId
-        || previousAssistantMessageId === currentAssistantMessageId;
-}
-
 function createAssistantOnlyRoundRef(
     adapter: SiteAdapter,
     assistantRootEl: HTMLElement,
@@ -351,7 +333,6 @@ function collectTurnWrapperRoundRefs(adapter: SiteAdapter, root: ParentNode): Ch
                 previousRound
                 && previousGroupEl
                 && areAdjacentConversationItems(previousGroupEl, turnWrapper)
-                && shouldExtendPreviousAssistantSurface(adapter, previousRound, turnWrapper)
             ) {
                 pushUnique(previousRound.groupEls, turnWrapper);
                 continue;
@@ -439,7 +420,6 @@ function collectLegacyContainerRoundRefs(adapter: SiteAdapter, root: ParentNode)
                 previousRound
                 && previousGroupEl
                 && areAdjacentConversationItems(previousGroupEl, container)
-                && shouldExtendPreviousAssistantSurface(adapter, previousRound, assistantRootEl)
             ) {
                 pushUnique(previousRound.groupEls, container);
                 continue;
@@ -535,7 +515,6 @@ function discoverChatGPTDomRoundRefs(adapter: SiteAdapter): ChatGPTDomRoundRef[]
                 previousRound
                 && previousGroupEl
                 && areAdjacentConversationItems(previousGroupEl, roleRoot)
-                && shouldExtendPreviousAssistantSurface(adapter, previousRound, roleRoot)
             ) {
                 pushUnique(previousRound.groupEls, roleRoot);
                 continue;
