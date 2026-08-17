@@ -278,6 +278,35 @@
       if (!pendingRound) continue;
       if (!isDisplayableMessage(message, 'assistant')) continue;
 
+      // Scheduled tasks append new visible assistant messages without a new
+      // user message. Once the preceding visible assistant is complete, treat
+      // the next one as its own semantic round instead of concatenating it
+      // into the original prompt/answer pair. Keep the nearest task prompt as
+      // the directory label while leaving userMessageId null so identity stays
+      // source-backed rather than synthetic.
+      if (
+        pendingRound.assistantContent?.trim()
+        && pendingRound.incomplete !== true
+        && !pendingDeepResearchReport
+      ) {
+        const inheritedPrompt = pendingRound.userPrompt || `Message ${rounds.length + 1}`;
+        const assistantMessageId = getMessageId(message);
+        pendingRound = {
+          id: typeof node.id === 'string'
+            ? node.id
+            : assistantMessageId || `assistant-${rounds.length + 1}`,
+          position: rounds.length + 1,
+          userPrompt: inheritedPrompt,
+          assistantContent: '',
+          preview: truncatePreview(inheritedPrompt),
+          messageId: null,
+          userMessageId: null,
+          assistantMessageId: null,
+          incomplete: false,
+        };
+        rounds.push(pendingRound);
+      }
+
       if (isExplicitlyIncompleteAssistantMessage(message)) {
         pendingRound.assistantContent = '';
         pendingRound.assistantMessageId = getMessageId(message) || pendingRound.assistantMessageId;
