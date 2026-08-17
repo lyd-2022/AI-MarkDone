@@ -140,6 +140,45 @@
     return extractTextFromValue(message.content);
   }
 
+  function readTimestampMs(value) {
+    const numeric = typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim() ? Number(value) : NaN;
+    if (!Number.isFinite(numeric) || numeric <= 0) return null;
+    // ChatGPT conversation payloads normally store Unix seconds. Accept
+    // millisecond variants as well so the label is robust across endpoints.
+    const timestampMs = numeric < 100000000000 ? numeric * 1000 : numeric;
+    const date = new Date(timestampMs);
+    return Number.isNaN(date.getTime()) ? null : timestampMs;
+  }
+
+  function formatScheduledTaskDate(message) {
+    const metadata = readRecord(message?.metadata);
+    const candidates = [
+      message?.create_time,
+      message?.createTime,
+      metadata?.create_time,
+      metadata?.createTime,
+      message?.update_time,
+      message?.updateTime,
+    ];
+    for (const candidate of candidates) {
+      const timestampMs = readTimestampMs(candidate);
+      if (timestampMs === null) continue;
+      const date = new Date(timestampMs);
+      const pad = (value) => String(value).padStart(2, '0');
+      return [
+        date.getFullYear(),
+        pad(date.getMonth() + 1),
+        pad(date.getDate()),
+      ].join('-') + ' ' + [
+        pad(date.getHours()),
+        pad(date.getMinutes()),
+      ].join(':');
+    }
+    return null;
+  }
+
   function getDeepResearchReportMessage(message) {
     const metadata = readRecord(message?.metadata);
     const sdk = readRecord(metadata?.chatgpt_sdk);
@@ -290,15 +329,23 @@
         && !pendingDeepResearchReport
       ) {
         const inheritedPrompt = pendingRound.userPrompt || `Message ${rounds.length + 1}`;
+        const scheduledTaskDate = formatScheduledTaskDate(message);
+        const directoryLabel = scheduledTaskDate
+          ? `定时任务 · ${scheduledTaskDate}`
+          : inheritedPrompt;
         const assistantMessageId = getMessageId(message);
         pendingRound = {
           id: typeof node.id === 'string'
             ? node.id
             : assistantMessageId || `assistant-${rounds.length + 1}`,
           position: rounds.length + 1,
-          userPrompt: inheritedPrompt,
+          // The source pipeline uses userPrompt as the directory label.
+          // Scheduled runs have no new user prompt, so use their own
+          // creation date; old payloads without a timestamp keep the task
+          // prompt as a backwards-compatible fallback.
+          userPrompt: directoryLabel,
           assistantContent: '',
-          preview: truncatePreview(inheritedPrompt),
+          preview: truncatePreview(directoryLabel),
           messageId: null,
           userMessageId: null,
           assistantMessageId: null,
