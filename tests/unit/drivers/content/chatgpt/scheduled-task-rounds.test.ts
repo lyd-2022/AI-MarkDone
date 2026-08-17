@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createConversationContentSource } from '../../../../helpers/chatgptContentFixtures';
+import { ChatGPTConversationSurface } from '@/drivers/content/chatgpt/ChatGPTConversationSurface';
 
 const BRIDGE_PATH = 'public/page-bridges/chatgpt-conversation-bridge.js';
 const REQUEST_EVENT = 'aimd:chatgpt-conversation-bridge:request';
@@ -105,66 +107,45 @@ describe('scheduled task conversation rounds', () => {
 });
 
 
-function buildScheduledTaskSurfaceFrame() {
-    const documentRef = {
-        key: 'chatgpt:scheduled-task-conversation-12345678',
-        platformId: 'chatgpt',
-        identityKind: 'canonical' as const,
+function buildScheduledTaskSnapshot() {
+    return {
         conversationId: 'scheduled-task-conversation-12345678',
-        canonicalUrl: 'https://chatgpt.com/c/scheduled-task-conversation-12345678',
-    };
-    const turns = [
-        {
-            key: 'user-node:assistant-message-1',
-            ordinal: 1,
-            identity: {
-                turnId: 'user-node',
+        revision: 1,
+        proof: 'observed-graph' as const,
+        branchKey: 'scheduled-task-branch',
+        capturedAt: Date.now(),
+        rounds: [
+            {
+                id: 'user-node',
+                position: 1,
+                userPrompt: 'Send the daily research brief',
+                assistantContent: 'Day 1 brief',
+                preview: 'Send the daily research brief',
+                messageId: 'assistant-message-1',
                 userMessageId: 'user-message',
                 assistantMessageId: 'assistant-message-1',
             },
-            userText: 'Send the daily research brief',
-            assistantMarkdown: 'Day 1 brief',
-        },
-        {
-            key: 'assistant-node-2:assistant-message-2',
-            ordinal: 2,
-            identity: {
-                turnId: 'assistant-node-2',
+            {
+                id: 'assistant-node-2',
+                position: 2,
+                userPrompt: 'Send the daily research brief',
+                assistantContent: 'Day 2 brief',
+                preview: 'Send the daily research brief',
+                messageId: 'assistant-message-2',
                 userMessageId: null,
                 assistantMessageId: 'assistant-message-2',
             },
-            userText: 'Send the daily research brief',
-            assistantMarkdown: 'Day 2 brief',
-        },
-        {
-            key: 'assistant-node-3:assistant-message-3',
-            ordinal: 3,
-            identity: {
-                turnId: 'assistant-node-3',
+            {
+                id: 'assistant-node-3',
+                position: 3,
+                userPrompt: 'Send the daily research brief',
+                assistantContent: 'Day 3 brief',
+                preview: 'Send the daily research brief',
+                messageId: 'assistant-message-3',
                 userMessageId: null,
                 assistantMessageId: 'assistant-message-3',
             },
-            userText: 'Send the daily research brief',
-            assistantMarkdown: 'Day 3 brief',
-        },
-    ];
-    return {
-        document: documentRef,
-        turns,
-        frame: {
-            projectionId: 'scheduled-task-projection',
-            obtainedTurns: turns.map((turn) => ({
-                status: 'obtained' as const,
-                turn,
-                target: {
-                    documentKey: documentRef.key,
-                    turnId: turn.identity.turnId,
-                    userMessageId: turn.identity.userMessageId,
-                    assistantMessageId: turn.identity.assistantMessageId,
-                },
-                materialization: null,
-            })),
-        },
+        ],
     };
 }
 
@@ -182,21 +163,13 @@ describe('scheduled task directory navigation', () => {
                 <div data-message-author-role="assistant" data-message-id="assistant-message-1"></div>
               </section>
             </div>
-            <div id="scheduled-run-2" data-turn-id-container="assistant-message-2">
-              <section data-turn="assistant">
-                <div data-message-author-role="assistant" data-message-id="assistant-message-2"></div>
-              </section>
-            </div>
-            <div data-turn-id-container="assistant-message-3">
-              <section data-turn="assistant">
-                <div data-message-author-role="assistant" data-message-id="assistant-message-3"></div>
-              </section>
-            </div>
+            <div id="scheduled-run-2" data-turn-id-container="assistant-message-2"></div>
+            <div data-turn-id-container="assistant-message-3"></div>
           </main>
         `;
     });
 
-    it('uses the assistant slot for an unmounted scheduled-task round and completes when it hydrates', async () => {
+    it('uses an assistant slot to hydrate and materialize one scheduled-task run from a grouped host round', async () => {
         const { materializeChatGPTConversationTarget } = await import(
             '@/drivers/content/chatgpt/ChatGPTConversationNavigation'
         );
@@ -204,54 +177,28 @@ describe('scheduled task directory navigation', () => {
             collectChatGPTDomRoundRefs,
             disposeChatGPTPageIndex,
         } = await import('@/drivers/content/chatgpt/domConversationDiscovery');
-        const { frame: initialFrame } = buildScheduledTaskSurfaceFrame();
         const runTwoSlot = document.getElementById('scheduled-run-2') as HTMLElement;
-        runTwoSlot.scrollIntoView = vi.fn();
-
-        let frame: any = initialFrame;
-        const listeners = new Set<(next: any) => void>();
         const adapter = {
             getObserverContainer: () => document.querySelector('main'),
             getMessageSelector: () => '[data-message-author-role="assistant"]',
+            getMessageContentSelector: () => '.markdown',
             getMessageId: (element: HTMLElement) => element.dataset.messageId ?? null,
             getToolbarAnchorElement: () => null,
             isStreamingMessage: () => false,
         } as any;
-        const domRounds = collectChatGPTDomRoundRefs(adapter);
-        expect(domRounds).toMatchObject([
-            { identity: { assistantMessageId: 'assistant-message-1', userMessageId: 'user-message' } },
-            { identity: { assistantMessageId: 'assistant-message-2', userMessageId: null }, source: 'assistant-only' },
-            { identity: { assistantMessageId: 'assistant-message-3', userMessageId: null }, source: 'assistant-only' },
-        ]);
-
-        const surface = {
-            readFrame: () => frame,
-            subscribeFrame: (listener: (next: any) => void) => {
-                listeners.add(listener);
-                return () => listeners.delete(listener);
-            },
-            refreshSurface: () => {
-                const hydrated = {
-                    anchorElement: runTwoSlot,
-                    messageElement: runTwoSlot,
-                    jumpAnchorElement: runTwoSlot,
-                    userElement: null,
-                    assistantElement: runTwoSlot,
-                    groupElements: [runTwoSlot],
-                };
-                frame = {
-                    ...frame,
-                    obtainedTurns: frame.obtainedTurns.map((entry: any) => (
-                        entry.turn.identity.assistantMessageId === 'assistant-message-2'
-                            ? { ...entry, materialization: hydrated }
-                            : entry
-                    )),
-                };
-                listeners.forEach((listener) => listener(frame));
-            },
-        } as any;
+        const source = createConversationContentSource(buildScheduledTaskSnapshot());
+        const surface = new ChatGPTConversationSurface({ adapter, content: source });
+        runTwoSlot.scrollIntoView = vi.fn(() => {
+            runTwoSlot.innerHTML = `
+              <section data-turn="assistant">
+                <div data-message-author-role="assistant" data-message-id="assistant-message-2"></div>
+              </section>
+            `;
+        });
 
         try {
+            expect(surface.readFrame().obtainedTurns[1]?.materialization).toBeNull();
+
             const result = await materializeChatGPTConversationTarget(adapter, {
                 position: 2,
                 roundId: 'assistant-node-2',
@@ -262,6 +209,9 @@ describe('scheduled task directory navigation', () => {
                 timeoutMs: 100,
             });
 
+            const domRounds = collectChatGPTDomRoundRefs(adapter);
+            expect(domRounds).toHaveLength(1);
+            expect(domRounds[0]?.groupEls).toHaveLength(3);
             expect(runTwoSlot.scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' });
             expect(result).toMatchObject({
                 ok: true,
@@ -272,7 +222,9 @@ describe('scheduled task directory navigation', () => {
                     assistantMessageId: 'assistant-message-2',
                 },
             });
+            expect(surface.readFrame().obtainedTurns[1]?.materialization?.assistantElement).toBe(runTwoSlot);
         } finally {
+            surface.dispose();
             disposeChatGPTPageIndex(adapter);
         }
     });
