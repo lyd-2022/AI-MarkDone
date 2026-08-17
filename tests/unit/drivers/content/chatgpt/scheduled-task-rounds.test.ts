@@ -213,15 +213,12 @@ describe('scheduled task directory navigation', () => {
             expect(domRounds).toHaveLength(1);
             expect(domRounds[0]?.groupEls).toHaveLength(3);
             expect(runTwoSlot.scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' });
-            expect(result).toMatchObject({
-                ok: true,
-                anchor: runTwoSlot,
-                round: {
-                    position: 2,
-                    userMessageId: null,
-                    assistantMessageId: 'assistant-message-2',
-                },
-            });
+            expect(result.ok).toBe(true);
+            if (!result.ok) throw new Error(result.message);
+            expect(result.anchor).toBe(runTwoSlot);
+            expect(result.round.position).toBe(2);
+            expect(result.round.userMessageId).toBeNull();
+            expect(result.round.assistantMessageId).toBe('assistant-message-2');
             expect(surface.readFrame().obtainedTurns[1]?.materialization?.assistantElement).toBe(runTwoSlot);
         } finally {
             surface.dispose();
