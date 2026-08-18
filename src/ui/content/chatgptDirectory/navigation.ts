@@ -59,6 +59,27 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+/**
+ * Resolve on the next paint, with a short timeout fallback for background
+ * tabs where requestAnimationFrame may be throttled. Mounted targets that
+ * remain stable for one paint should not pay the legacy two-sample delay.
+ */
+function waitForNextPaint(): Promise<void> {
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timeoutId);
+            resolve();
+        };
+        const timeoutId = window.setTimeout(finish, 32);
+        if (typeof window.requestAnimationFrame === 'function') {
+            window.requestAnimationFrame(finish);
+        }
+    });
+}
+
 function isNavigationDebugEnabled(): boolean {
     try {
         return window.localStorage.getItem('aimd:nav-debug') === '1'
@@ -240,6 +261,30 @@ async function scrollChatGPTAnchorWithAlignment(
                 resizeObserver.observe(anchor);
                 const scrollRoot = adapter.getConversationScrollRoot?.();
                 if (scrollRoot) resizeObserver.observe(scrollRoot);
+            }
+        }
+
+        await waitForNextPaint();
+        if (!aborted) {
+            const nextAnchor = getAnchorForTarget(target, options.surface);
+            if (nextAnchor && nextAnchor !== anchor) {
+                resizeObserver?.unobserve(anchor);
+                anchor = nextAnchor;
+                if (resizeObserver) resizeObserver.observe(anchor);
+            }
+            if (anchor.isConnected && typeof anchor.scrollIntoView === 'function') {
+                const currentTop = getAnchorTop(anchor);
+                const delta = currentTop - targetTop;
+                debugEvents.push({
+                    stage: 'frame-measure',
+                    position: target.position,
+                    attempt: attempts,
+                    top: currentTop,
+                    delta,
+                    mutationCount,
+                    resizeCount,
+                });
+                if (Math.abs(delta) <= tolerancePx) return { ok: true, anchor };
             }
         }
 

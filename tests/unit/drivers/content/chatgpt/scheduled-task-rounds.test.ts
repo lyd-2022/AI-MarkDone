@@ -264,6 +264,66 @@ describe('scheduled task directory navigation', () => {
         `;
     });
 
+    it('completes a mounted directory jump after one paint without waiting for quiet timers', async () => {
+        const { navigateChatGPTDirectoryTarget } = await import(
+            '@/ui/content/chatgptDirectory/navigation'
+        );
+        const adapter = {
+            getObserverContainer: () => document.querySelector('main'),
+            getMessageSelector: () => '[data-message-author-role="assistant"]',
+            getMessageContentSelector: () => '.markdown',
+            getMessageId: (element: HTMLElement) => element.dataset.messageId ?? null,
+            getToolbarAnchorElement: () => null,
+            isStreamingMessage: () => false,
+        } as any;
+        const source = createConversationContentSource(buildScheduledTaskSnapshot());
+        const surface = new ChatGPTConversationSurface({ adapter, content: source });
+        const scrollDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+        const rafDescriptor = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame');
+        const scrollIntoView = vi.fn();
+        const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+            x: 0, y: 0, width: 100, height: 120, top: 0, right: 100, bottom: 120, left: 0,
+            toJSON: () => ({}),
+        } as DOMRect);
+        vi.useFakeTimers();
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+            configurable: true,
+            writable: true,
+            value: scrollIntoView,
+        });
+        Object.defineProperty(window, 'requestAnimationFrame', {
+            configurable: true,
+            writable: true,
+            value: (callback: FrameRequestCallback) => { callback(16); return 1; },
+        });
+
+        try {
+            const result = await navigateChatGPTDirectoryTarget(adapter, {
+                position: 1,
+                roundId: 'user-node',
+                userMessageId: 'user-message',
+                assistantMessageId: 'assistant-message-1',
+            }, { surface, alignmentQuietMs: 500 });
+
+            expect(result.ok).toBe(true);
+            expect(scrollIntoView).toHaveBeenCalledTimes(1);
+        } finally {
+            surface.dispose();
+            rectSpy.mockRestore();
+            if (scrollDescriptor) {
+                Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollDescriptor);
+            } else {
+                delete (HTMLElement.prototype as any).scrollIntoView;
+            }
+            if (rafDescriptor) {
+                Object.defineProperty(window, 'requestAnimationFrame', rafDescriptor);
+            } else {
+                delete (window as any).requestAnimationFrame;
+            }
+            vi.useRealTimers();
+        }
+    });
+
     it('uses an assistant slot to hydrate and materialize one scheduled-task run from a grouped host round', async () => {
         const { materializeChatGPTConversationTarget } = await import(
             '@/drivers/content/chatgpt/ChatGPTConversationNavigation'

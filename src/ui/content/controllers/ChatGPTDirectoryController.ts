@@ -279,6 +279,10 @@ export class ChatGPTDirectoryController {
 
     private handleScroll = () => {
         if (this.isViewportResizeSuspended()) return;
+        // Programmatic navigation already knows the selected position. Avoid
+        // forcing layout for every mounted round while ChatGPT scrolls and
+        // hydrates the target window; reconcile once navigation settles.
+        if (this.activeLocateAbortController && !this.activeLocateAbortController.signal.aborted) return;
         if (this.rafId !== null) return;
         this.rafId = window.requestAnimationFrame(() => {
             this.rafId = null;
@@ -436,6 +440,8 @@ export class ChatGPTDirectoryController {
         const locateController = new AbortController();
         this.activeLocateAbortController = locateController;
         const signal = locateController.signal;
+        this.activePosition = round.position;
+        this.rail?.setActivePosition(round.position, { follow: false });
         try {
             if (this.navigation) {
                 await this.navigation.navigate({
@@ -468,6 +474,7 @@ export class ChatGPTDirectoryController {
         } finally {
             if (this.activeLocateAbortController === locateController) {
                 this.activeLocateAbortController = null;
+                this.handleScroll();
             }
         }
     }
