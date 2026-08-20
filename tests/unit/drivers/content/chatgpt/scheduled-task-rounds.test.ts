@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createConversationContentSource } from '../../../../helpers/chatgptContentFixtures';
 import { ChatGPTConversationSurface } from '@/drivers/content/chatgpt/ChatGPTConversationSurface';
+import {
+    collectChatGPTDomRoundRefs,
+    disposeChatGPTPageIndex,
+} from '@/drivers/content/chatgpt/domConversationDiscovery';
 
 const BRIDGE_PATH = 'public/page-bridges/chatgpt-conversation-bridge.js';
 const REQUEST_EVENT = 'aimd:chatgpt-conversation-bridge:request';
@@ -66,6 +70,38 @@ function buildOrdinaryConversationPayload(conversationId: string, roundCount: nu
             id: assistantNode,
             parent: userNode,
             message: message(`assistant-message-${ordinal}`, 'assistant', `Answer ${ordinal}`),
+        };
+        parent = assistantNode;
+    }
+    return { conversation_id: conversationId, current_node: parent, mapping };
+}
+
+function buildLargeScheduledTaskPayload(
+    conversationId: string,
+    runCount: number,
+    reportChars: number,
+) {
+    const mapping: Record<string, unknown> = {
+        root: { id: 'root', parent: null, message: null },
+        'user-node': {
+            id: 'user-node',
+            parent: 'root',
+            message: message('user-message', 'user', 'Send the daily research brief'),
+        },
+    };
+    let parent = 'user-node';
+    for (let index = 0; index < runCount; index += 1) {
+        const ordinal = index + 1;
+        const assistantNode = `assistant-node-${ordinal}`;
+        mapping[assistantNode] = {
+            id: assistantNode,
+            parent,
+            message: message(
+                `assistant-message-${ordinal}`,
+                'assistant',
+                `# Daily brief ${ordinal}\n\n${'x'.repeat(reportChars)}`,
+                1717245000 + index * 86_400,
+            ),
         };
         parent = assistantNode;
     }
@@ -201,6 +237,32 @@ describe('scheduled task conversation rounds', () => {
     });
 });
 
+
+
+    it('reuses one large scheduled-task projection across repeated snapshot reads', async () => {
+        const conversationId = 'scheduled-task-large-conversation-12345678';
+        history.replaceState({}, '', `/c/${conversationId}`);
+        const payload = buildLargeScheduledTaskPayload(conversationId, 30, 20_000);
+        const fetchMock = vi.fn(async () => new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        Object.defineProperty(window, 'fetch', { configurable: true, value: fetchMock });
+        vi.stubGlobal('fetch', fetchMock);
+
+        installBridge();
+        await window.fetch(`/backend-api/conversation/${conversationId}`);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+        const first = await requestSnapshot(conversationId);
+        const second = await requestSnapshot(conversationId);
+
+        expect(first.ok).toBe(true);
+        expect(first.snapshot.rounds).toHaveLength(30);
+        expect(second.snapshot.rounds).toBe(first.snapshot.rounds);
+        expect(first.snapshot.rounds[29].assistantContent.length).toBeGreaterThanOrEqual(20_000);
+        expect(first.snapshot.rounds[1].userMessageId).toBeNull();
+    });
 
 function buildScheduledTaskSnapshot() {
     return {
@@ -382,4 +444,44 @@ describe('scheduled task directory navigation', () => {
             disposeChatGPTPageIndex(adapter);
         }
     });
+
+    it('keeps the mounted round snapshot cached across pure assistant text changes', async () => {
+        document.querySelector('main')!.innerHTML = `
+          <div data-turn-id-container="user-message">
+            <section data-turn="user">
+              <div data-message-author-role="user" data-message-id="user-message"></div>
+            </section>
+          </div>
+          <div data-turn-id-container="assistant-message-1">
+            <section data-turn="assistant">
+              <div data-message-author-role="assistant" data-message-id="assistant-message-1">
+                <div class="markdown">Initial answer</div>
+              </div>
+            </section>
+          </div>
+        `;
+        const adapter = {
+            getObserverContainer: () => document.querySelector('main'),
+            getMessageSelector: () => '[data-message-author-role="assistant"]',
+            getMessageContentSelector: () => '.markdown',
+            getMessageId: (element: HTMLElement) => element.dataset.messageId ?? null,
+            getToolbarAnchorElement: () => null,
+            isStreamingMessage: () => false,
+        } as any;
+
+        try {
+            const first = collectChatGPTDomRoundRefs(adapter);
+            const textNode = document.querySelector('.markdown')!.firstChild!;
+            textNode.nodeValue = 'Updated answer';
+            await Promise.resolve();
+            await Promise.resolve();
+            const second = collectChatGPTDomRoundRefs(adapter);
+
+            expect(first).toHaveLength(1);
+            expect(second).toBe(first);
+        } finally {
+            disposeChatGPTPageIndex(adapter);
+        }
+    });
+
 });

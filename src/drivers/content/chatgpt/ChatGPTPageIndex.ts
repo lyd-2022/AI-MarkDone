@@ -273,13 +273,13 @@ export class ChatGPTPageIndex {
                 collectAssistantMessageIds(mutation).forEach((id) => assistantMessageIds.add(id));
                 collectRemovedAssistantMessageIds(mutation).forEach((id) => removedAssistantMessageIds.add(id));
             }
-            const hostEvidenceChanged = Array.from(kinds).some((kind) => kind !== 'surface');
-            if (hostEvidenceChanged) this.invalidate();
-            this.advanceSurface(window.location.href, surfaceRebased);
-            this.observationRevision += 1;
-            const shouldReadGenerationState = Array.from(kinds).some((kind) => (
+            const topologyOrLifecycleChanged = Array.from(kinds).some((kind) => (
                 kind === 'structure' || kind === 'identity' || kind === 'lifecycle'
             ));
+            if (topologyOrLifecycleChanged) this.invalidate();
+            this.advanceSurface(window.location.href, surfaceRebased);
+            this.observationRevision += 1;
+            const shouldReadGenerationState = topologyOrLifecycleChanged;
             let activeGenerationAssistantMessageIds: string[] = [];
             let generationStartedAssistantMessageIds: string[] = [];
             let generationCompletedAssistantMessageIds: string[] = [];

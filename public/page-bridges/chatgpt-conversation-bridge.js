@@ -1,6 +1,6 @@
 (() => {
   const BRIDGE_KEY = '__AIMD_CHATGPT_CONVERSATION_BRIDGE__';
-  const BRIDGE_VERSION = 6;
+  const BRIDGE_VERSION = 7;
   const existingBridge = window[BRIDGE_KEY];
   if (existingBridge?.version === BRIDGE_VERSION) return;
   existingBridge?.dispose?.();
@@ -576,6 +576,7 @@
       const projection = branchNodes ? buildRoundsFromPayload(payload) : null;
       ranked.push({
         payload,
+        projection,
         roundCount: projection?.rounds?.length || 0,
         branchDepth: branchNodes?.length || 0,
         mappingNodeCount: Object.keys(mapping).length,
@@ -586,10 +587,15 @@
       || right.branchDepth - left.branchDepth
       || right.mappingNodeCount - left.mappingNodeCount
     ));
-    return ranked.map((candidate) => candidate.payload);
+    return ranked;
   }
 
-  function rememberObservedPayload(expectedConversationId, payload, requestSequence) {
+  function rememberObservedPayload(
+    expectedConversationId,
+    payload,
+    requestSequence,
+    candidateProjection,
+  ) {
     if (!payload || typeof payload !== 'object') return false;
     const payloadConversationId = getPayloadConversationId(payload);
     const conversationId = payloadConversationId || expectedConversationId;
@@ -618,11 +624,23 @@
       : !isNewestCapture || regressesToKnownAncestor
         ? previous.currentNodeId
         : currentNodeId;
+    const validatedProjection = (
+      !previous
+      && nextCurrentNodeId === currentNodeId
+      && candidateProjection
+    ) || buildRoundsFromPayload({
+      conversation_id: conversationId,
+      current_node: nextCurrentNodeId,
+      mapping: mergedMapping,
+    });
+    if (!validatedProjection) return false;
+
     const captureSequence = ++bridgeState.captureSequence;
     bridgeState.graphsByConversation.delete(conversationId);
     bridgeState.graphsByConversation.set(conversationId, {
       mapping: mergedMapping,
       currentNodeId: nextCurrentNodeId,
+      projection: validatedProjection,
       capturedAt: nowTs(),
       captureSequence,
       requestSequence: Math.max(requestSequence, previous?.requestSequence || 0),
@@ -632,13 +650,6 @@
       if (!oldestConversationId) break;
       bridgeState.graphsByConversation.delete(oldestConversationId);
     }
-
-    const validatedProjection = buildRoundsFromPayload({
-      conversation_id: conversationId,
-      current_node: nextCurrentNodeId,
-      mapping: mergedMapping,
-    });
-    if (!validatedProjection) return false;
 
     window.dispatchEvent(new CustomEvent(CAPTURE_EVENT, {
       detail: JSON.stringify({
@@ -662,8 +673,13 @@
         findObservedGraphPayloads(rawPayload, expectedConversationId),
         expectedConversationId,
       );
-      for (const payload of payloads) {
-        if (rememberObservedPayload(conversationId, payload, requestSequence)) break;
+      for (const candidate of payloads) {
+        if (rememberObservedPayload(
+          conversationId,
+          candidate.payload,
+          requestSequence,
+          candidate.projection,
+        )) break;
       }
     } catch {
       // The host response remains untouched; an unreadable clone simply yields no observation.
@@ -714,12 +730,7 @@
   function getSnapshot(conversationId) {
     const observed = bridgeState.graphsByConversation.get(conversationId);
     if (!observed) return null;
-    const payload = {
-      conversation_id: conversationId,
-      current_node: observed.currentNodeId,
-      mapping: observed.mapping,
-    };
-    const built = buildRoundsFromPayload(payload);
+    const built = observed.projection;
     if (!built) return null;
 
     const rounds = built.rounds;
