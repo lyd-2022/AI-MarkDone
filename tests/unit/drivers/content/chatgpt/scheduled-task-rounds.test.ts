@@ -235,11 +235,7 @@ describe('scheduled task conversation rounds', () => {
         expect(response.snapshot.rounds[10]?.assistantMessageId).toBe('assistant-message-11');
         expect(response.snapshot.branchKey).toBe('assistant-node-11');
     });
-});
-
-
-
-    it('reuses one large scheduled-task projection across repeated snapshot reads', async () => {
+}    it('reuses one large scheduled-task projection across repeated snapshot reads', async () => {
         const conversationId = 'scheduled-task-large-conversation-12345678';
         history.replaceState({}, '', `/c/${conversationId}`);
         const payload = buildLargeScheduledTaskPayload(conversationId, 30, 20_000);
@@ -263,6 +259,7 @@ describe('scheduled task conversation rounds', () => {
         expect(first.snapshot.rounds[29].assistantContent.length).toBeGreaterThanOrEqual(20_000);
         expect(first.snapshot.rounds[1].userMessageId).toBeNull();
     });
+});
 
 function buildScheduledTaskSnapshot() {
     return {
