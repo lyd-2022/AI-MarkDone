@@ -32,8 +32,9 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      # This focused gate is deterministic and covers the behavior this branch
-      # changes. The full historical discovery suite remains available through
+      # This focused gate is deterministic and covers scheduled-task navigation,
+      # large captured conversation projection reuse, and content-only DOM cache
+      # retention. The full historical discovery suite remains available through
       # its existing npm command, but has unrelated timing-sensitive tests.
       - name: Run scheduled-task directory regression
         run: npx vitest run tests/unit/drivers/content/chatgpt/scheduled-task-rounds.test.ts
