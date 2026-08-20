@@ -273,6 +273,7 @@ export class ChatGPTPageIndex {
                 collectAssistantMessageIds(mutation).forEach((id) => assistantMessageIds.add(id));
                 collectRemovedAssistantMessageIds(mutation).forEach((id) => removedAssistantMessageIds.add(id));
             }
+            const hostEvidenceChanged = Array.from(kinds).some((kind) => kind !== 'surface');
             const topologyOrLifecycleChanged = Array.from(kinds).some((kind) => (
                 kind === 'structure' || kind === 'identity' || kind === 'lifecycle'
             ));
