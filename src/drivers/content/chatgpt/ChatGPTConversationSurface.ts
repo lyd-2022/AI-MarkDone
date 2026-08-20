@@ -186,16 +186,16 @@ export class ChatGPTConversationSurface implements ConversationSurfacePortV1, Co
         const document = state.document;
         const snapshot = state.snapshot;
         const hostRounds = this.pageIndex.getSnapshot();
-        const mountedByAssistantId = indexUniqueHostRounds(hostRounds);
+        const mountedByAssistantId = indexUniqueHostRounds(hostRounds, this.options.adapter);
         const obtainedAssistantIds = new Set<string>();
         const obtainedTurns: ConversationObtainedSurfaceTurnV1[] = [];
 
         if (document && snapshot) {
             for (const turn of snapshot.turns) {
                 obtainedAssistantIds.add(turn.identity.assistantMessageId);
-                const hostRound = mountedByAssistantId.get(turn.identity.assistantMessageId) ?? null;
-                const materialization = hostRound && hostRound !== 'ambiguous' && hostMatchesTurn(hostRound, turn)
-                    ? this.materializeHostRound(hostRound)
+                const hostCandidate = mountedByAssistantId.get(turn.identity.assistantMessageId) ?? null;
+                const materialization = hostCandidate && hostCandidate !== 'ambiguous' && hostMatchesTurn(hostCandidate, turn)
+                    ? this.materializeHostCandidate(hostCandidate)
                     : null;
                 obtainedTurns.push(Object.freeze({
                     status: 'obtained' as const,
@@ -288,17 +288,26 @@ export class ChatGPTConversationSurface implements ConversationSurfacePortV1, Co
     }
 
     private materializeHostRound(round: ChatGPTDomRoundRef): ConversationSurfaceMaterializationV1 | null {
-        const messageElement = round.assistantMessageEl;
+        const candidate = createPrimaryHostCandidate(round);
+        return candidate ? this.materializeHostCandidate(candidate) : null;
+    }
+
+    private materializeHostCandidate(candidate: HostRoundCandidate): ConversationSurfaceMaterializationV1 | null {
+        const { round, assistantMessageEl: messageElement, assistantRootEl, isAssistantFragment } = candidate;
         if (!messageElement.isConnected) return null;
         const anchorElement = this.options.adapter.getToolbarAnchorElement(messageElement) ?? messageElement;
         if (!anchorElement.isConnected) return null;
-        const groupElements = round.groupEls.filter((element) => element.isConnected);
+        const groupElements = isAssistantFragment
+            ? [assistantRootEl].filter((element) => element.isConnected)
+            : round.groupEls.filter((element) => element.isConnected);
         return Object.freeze({
             anchorElement,
             messageElement,
-            jumpAnchorElement: round.jumpAnchorEl.isConnected ? round.jumpAnchorEl : anchorElement,
-            userElement: round.userRootEl.isConnected ? round.userRootEl : null,
-            assistantElement: round.assistantRootEl.isConnected ? round.assistantRootEl : messageElement,
+            jumpAnchorElement: isAssistantFragment && assistantRootEl.isConnected
+                ? assistantRootEl
+                : (round.jumpAnchorEl.isConnected ? round.jumpAnchorEl : anchorElement),
+            userElement: isAssistantFragment ? null : (round.userRootEl.isConnected ? round.userRootEl : null),
+            assistantElement: assistantRootEl.isConnected ? assistantRootEl : messageElement,
             groupElements: Object.freeze(groupElements.length > 0 ? groupElements : [messageElement]),
         });
     }
@@ -333,27 +342,117 @@ export class ChatGPTConversationSurface implements ConversationSurfacePortV1, Co
     }
 }
 
-type IndexedHostRound = ChatGPTDomRoundRef | 'ambiguous';
+type HostRoundCandidate = Readonly<{
+    round: ChatGPTDomRoundRef;
+    assistantMessageId: string;
+    assistantMessageEl: HTMLElement;
+    assistantRootEl: HTMLElement;
+    isAssistantFragment: boolean;
+}>;
 
-function indexUniqueHostRounds(rounds: readonly ChatGPTDomRoundRef[]): Map<string, IndexedHostRound> {
+type IndexedHostRound = HostRoundCandidate | 'ambiguous';
+
+function normalizeAssistantMessageId(value: string | null | undefined): string | null {
+    const normalized = value?.trim();
+    return normalized || null;
+}
+
+function readAssistantMessageId(adapter: SiteAdapter, messageEl: HTMLElement): string | null {
+    return normalizeAssistantMessageId(adapter.getMessageId(messageEl))
+        ?? normalizeAssistantMessageId(messageEl.getAttribute('data-message-id'));
+}
+
+function createPrimaryHostCandidate(round: ChatGPTDomRoundRef): HostRoundCandidate | null {
+    const assistantMessageId = resolveChatGPTDomRoundProjectionIdentity(round)?.assistantMessageId;
+    if (!assistantMessageId) return null;
+    return {
+        round,
+        assistantMessageId,
+        assistantMessageEl: round.assistantMessageEl,
+        assistantRootEl: round.assistantRootEl,
+        isAssistantFragment: false,
+    };
+}
+
+/**
+ * ChatGPT can render consecutive assistant cards inside one logical host
+ * group. Preserve that group for ordinary multi-surface answers, while
+ * indexing every concrete assistant message so source-backed scheduled task
+ * runs still receive their own materialization.
+ */
+function collectAssistantFragments(
+    adapter: SiteAdapter,
+    round: ChatGPTDomRoundRef,
+): HostRoundCandidate[] {
+    const seenMessages = new Set<HTMLElement>([round.assistantMessageEl]);
+    const fragments: HostRoundCandidate[] = [];
+    for (const groupEl of round.groupEls) {
+        const messageEls: HTMLElement[] = [];
+        if (groupEl.matches('[data-message-author-role="assistant"]')) messageEls.push(groupEl);
+        for (const messageEl of groupEl.querySelectorAll<HTMLElement>('[data-message-author-role="assistant"]')) {
+            messageEls.push(messageEl);
+        }
+        const selector = adapter.getMessageSelector().trim();
+        if (selector) {
+            if (groupEl.matches(selector)) messageEls.push(groupEl);
+            for (const messageEl of groupEl.querySelectorAll<HTMLElement>(selector)) messageEls.push(messageEl);
+        }
+        for (const messageEl of messageEls) {
+            if (seenMessages.has(messageEl)) continue;
+            seenMessages.add(messageEl);
+            const assistantMessageId = readAssistantMessageId(adapter, messageEl);
+            if (!assistantMessageId) continue;
+            fragments.push({
+                round,
+                assistantMessageId,
+                assistantMessageEl: messageEl,
+                assistantRootEl: groupEl,
+                isAssistantFragment: true,
+            });
+        }
+    }
+    return fragments;
+}
+
+function indexUniqueHostRounds(
+    rounds: readonly ChatGPTDomRoundRef[],
+    adapter: SiteAdapter,
+): Map<string, IndexedHostRound> {
     const index = new Map<string, IndexedHostRound>();
+    const add = (candidate: HostRoundCandidate): void => {
+        const existing = index.get(candidate.assistantMessageId);
+        if (!existing) {
+            index.set(candidate.assistantMessageId, candidate);
+            return;
+        }
+        if (existing === 'ambiguous') return;
+        if (existing.assistantMessageEl !== candidate.assistantMessageEl) {
+            index.set(candidate.assistantMessageId, 'ambiguous');
+        }
+    };
     for (const round of rounds) {
-        const assistantMessageId = resolveChatGPTDomRoundProjectionIdentity(round)?.assistantMessageId;
-        if (!assistantMessageId) continue;
-        const existing = index.get(assistantMessageId);
-        index.set(assistantMessageId, existing && existing !== round ? 'ambiguous' : round);
+        const primary = createPrimaryHostCandidate(round);
+        if (primary) add(primary);
+        for (const fragment of collectAssistantFragments(adapter, round)) add(fragment);
     }
     return index;
 }
 
-function hostMatchesTurn(round: ChatGPTDomRoundRef, turn: ConversationTurnV1): boolean {
-    const identity = resolveChatGPTDomRoundProjectionIdentity(round);
-    if (!identity || identity.assistantMessageId !== turn.identity.assistantMessageId) return false;
+function hostMatchesTurn(candidate: HostRoundCandidate, turn: ConversationTurnV1): boolean {
+    if (candidate.assistantMessageId !== turn.identity.assistantMessageId) return false;
+    // A fragment is an independently addressable assistant card inside an
+    // otherwise grouped host round, so it intentionally inherits no user or
+    // turn identity from that group.
+    if (candidate.isAssistantFragment) return true;
+    const identity = resolveChatGPTDomRoundProjectionIdentity(candidate.round);
+    if (!identity) return false;
     if (identity.userMessageId && identity.userMessageId !== turn.identity.userMessageId) return false;
-    const observedTurnId = round.identity.roundId?.trim() || round.identity.assistantTurnId?.trim() || null;
+    const observedTurnId = candidate.round.identity.roundId?.trim()
+        || candidate.round.identity.assistantTurnId?.trim()
+        || null;
     return !observedTurnId
         || observedTurnId === turn.identity.turnId
-        || round.source === 'assistant-only';
+        || candidate.round.source === 'assistant-only';
 }
 
 function toTarget(documentKey: string, turn: ConversationTurnV1): ConversationTargetV1 {

@@ -1,0 +1,59 @@
+name: Build extension artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/scheduled-task-directory-navigation
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extension-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    name: Test and build browser packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      # This focused gate is deterministic and covers scheduled-task navigation,
+      # large captured conversation projection reuse, and content-only DOM cache
+      # retention. The full historical discovery suite remains available through
+      # its existing npm command, but has unrelated timing-sensitive tests.
+      - name: Run scheduled-task directory regression
+        run: npx vitest run tests/unit/drivers/content/chatgpt/scheduled-task-rounds.test.ts
+
+      - name: Build Chrome and Firefox packages
+        run: npm run build
+
+      - name: Upload Chrome unpacked extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-MarkDone-chrome-${{ github.sha }}
+          path: dist-chrome
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Firefox unpacked extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-MarkDone-firefox-${{ github.sha }}
+          path: dist-firefox
+          if-no-files-found: error
+          retention-days: 14

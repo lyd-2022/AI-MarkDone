@@ -329,8 +329,12 @@ function collectTurnWrapperRoundRefs(adapter: SiteAdapter, root: ParentNode): Ch
         if (!pendingUser) {
             const previousRound = rounds[rounds.length - 1];
             const previousGroupEl = previousRound?.groupEls[previousRound.groupEls.length - 1];
-            if (previousGroupEl && areAdjacentConversationItems(previousGroupEl, turnWrapper)) {
-                pushUnique(previousRound!.groupEls, turnWrapper);
+            if (
+                previousRound
+                && previousGroupEl
+                && areAdjacentConversationItems(previousGroupEl, turnWrapper)
+            ) {
+                pushUnique(previousRound.groupEls, turnWrapper);
                 continue;
             }
             rounds.push(createAssistantOnlyRoundRef(adapter, turnWrapper, rounds.length));
@@ -412,8 +416,12 @@ function collectLegacyContainerRoundRefs(adapter: SiteAdapter, root: ParentNode)
         if (!pendingUser) {
             const previousRound = rounds[rounds.length - 1];
             const previousGroupEl = previousRound?.groupEls[previousRound.groupEls.length - 1];
-            if (previousGroupEl && areAdjacentConversationItems(previousGroupEl, container)) {
-                pushUnique(previousRound!.groupEls, container);
+            if (
+                previousRound
+                && previousGroupEl
+                && areAdjacentConversationItems(previousGroupEl, container)
+            ) {
+                pushUnique(previousRound.groupEls, container);
                 continue;
             }
             rounds.push(createAssistantOnlyRoundRef(adapter, assistantRootEl, rounds.length));
@@ -503,8 +511,12 @@ function discoverChatGPTDomRoundRefs(adapter: SiteAdapter): ChatGPTDomRoundRef[]
         if (!pendingUser || pendingUser.paired) {
             const previousRound = rounds[rounds.length - 1];
             const previousGroupEl = previousRound?.groupEls[previousRound.groupEls.length - 1];
-            if (previousGroupEl && areAdjacentConversationItems(previousGroupEl, roleRoot)) {
-                pushUnique(previousRound!.groupEls, roleRoot);
+            if (
+                previousRound
+                && previousGroupEl
+                && areAdjacentConversationItems(previousGroupEl, roleRoot)
+            ) {
+                pushUnique(previousRound.groupEls, roleRoot);
                 continue;
             }
             rounds.push(createAssistantOnlyRoundRef(adapter, roleRoot, rounds.length));

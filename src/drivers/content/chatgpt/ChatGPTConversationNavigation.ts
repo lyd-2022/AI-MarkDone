@@ -100,12 +100,15 @@ function resolveCanonicalHostSlot(
 ): HTMLElement | null {
     const sequence: CanonicalSlotEntry[] = [];
     for (const round of rounds) {
-        if (!round.userMessageId || !round.assistantMessageId) return null;
+        if (!round.assistantMessageId) return null;
+        if (round.userMessageId) {
+            sequence.push({
+                round,
+                role: 'user',
+                materializedEl: round.materialization?.userElement ?? null,
+            });
+        }
         sequence.push({
-            round,
-            role: 'user',
-            materializedEl: round.materialization?.userElement ?? null,
-        }, {
             round,
             role: 'assistant',
             materializedEl: round.materialization?.assistantElement ?? null,
@@ -147,7 +150,12 @@ function resolveCanonicalHostSlot(
     const targetRoundId = normalizeIdentity(target.roundId);
     const identityCandidates: Array<{ id: string; role: 'user' | 'assistant' }> = [];
     if (targetUserMessageId) identityCandidates.push({ id: targetUserMessageId, role: 'user' });
-    if (targetRoundId) identityCandidates.push({ id: targetRoundId, role: 'user' });
+    if (targetRoundId) {
+        identityCandidates.push({
+            id: targetRoundId,
+            role: targetUserMessageId ? 'user' : 'assistant',
+        });
+    }
     if (targetAssistantMessageId) identityCandidates.push({ id: targetAssistantMessageId, role: 'assistant' });
     const userIdentitySlots = new Set<HTMLElement>();
     const assistantIdentitySlots = new Set<HTMLElement>();
@@ -157,9 +165,9 @@ function resolveCanonicalHostSlot(
         if (candidate.role === 'user') userIdentitySlots.add(slot);
         else assistantIdentitySlots.add(slot);
     }
-    // A canonical round has two persistent host slots. Prefer the user slot
-    // because it is the stable coarse navigation anchor; only fall back to
-    // the assistant slot when the source did not expose a user identity.
+    // Normal rounds prefer their user slot as the stable coarse anchor.
+    // Assistant-only scheduled-task rounds have no user slot, so their typed
+    // assistant identity is the authoritative coarse navigation anchor.
     if (userIdentitySlots.size === 1) return userIdentitySlots.values().next().value ?? null;
     if (userIdentitySlots.size > 1) return null;
     if (assistantIdentitySlots.size === 1) return assistantIdentitySlots.values().next().value ?? null;
@@ -194,7 +202,10 @@ function resolveCanonicalHostSlot(
         || offset + sequence.length > slots.length
     ) return null;
 
-    const targetIndex = sequence.findIndex((entry) => entry.round.position === target.position && entry.role === 'user');
+    const targetRole: CanonicalSlotEntry['role'] = target.userMessageId ? 'user' : 'assistant';
+    const targetIndex = sequence.findIndex((entry) => (
+        entry.round.position === target.position && entry.role === targetRole
+    ));
     if (targetIndex < 0) return null;
     const slot = slots[offset + targetIndex];
     return slot?.isConnected ? slot : null;

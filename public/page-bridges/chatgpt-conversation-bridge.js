@@ -1,6 +1,6 @@
 (() => {
   const BRIDGE_KEY = '__AIMD_CHATGPT_CONVERSATION_BRIDGE__';
-  const BRIDGE_VERSION = 5;
+  const BRIDGE_VERSION = 7;
   const existingBridge = window[BRIDGE_KEY];
   if (existingBridge?.version === BRIDGE_VERSION) return;
   existingBridge?.dispose?.();
@@ -140,6 +140,45 @@
     return extractTextFromValue(message.content);
   }
 
+  function readTimestampMs(value) {
+    const numeric = typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim() ? Number(value) : NaN;
+    if (!Number.isFinite(numeric) || numeric <= 0) return null;
+    // ChatGPT conversation payloads normally store Unix seconds. Accept
+    // millisecond variants as well so the label is robust across endpoints.
+    const timestampMs = numeric < 100000000000 ? numeric * 1000 : numeric;
+    const date = new Date(timestampMs);
+    return Number.isNaN(date.getTime()) ? null : timestampMs;
+  }
+
+  function formatScheduledTaskDate(message) {
+    const metadata = readRecord(message?.metadata);
+    const candidates = [
+      message?.create_time,
+      message?.createTime,
+      metadata?.create_time,
+      metadata?.createTime,
+      message?.update_time,
+      message?.updateTime,
+    ];
+    for (const candidate of candidates) {
+      const timestampMs = readTimestampMs(candidate);
+      if (timestampMs === null) continue;
+      const date = new Date(timestampMs);
+      const pad = (value) => String(value).padStart(2, '0');
+      return [
+        date.getFullYear(),
+        pad(date.getMonth() + 1),
+        pad(date.getDate()),
+      ].join('-') + ' ' + [
+        pad(date.getHours()),
+        pad(date.getMinutes()),
+      ].join(':');
+    }
+    return null;
+  }
+
   function getDeepResearchReportMessage(message) {
     const metadata = readRecord(message?.metadata);
     const sdk = readRecord(metadata?.chatgpt_sdk);
@@ -277,6 +316,43 @@
       if (role !== 'assistant') continue;
       if (!pendingRound) continue;
       if (!isDisplayableMessage(message, 'assistant')) continue;
+
+      // Scheduled tasks append new visible assistant messages without a new
+      // user message. Once the preceding visible assistant is complete, treat
+      // the next one as its own semantic round instead of concatenating it
+      // into the original prompt/answer pair. Keep the nearest task prompt as
+      // the directory label while leaving userMessageId null so identity stays
+      // source-backed rather than synthetic.
+      if (
+        pendingRound.assistantContent?.trim()
+        && pendingRound.incomplete !== true
+        && !pendingDeepResearchReport
+      ) {
+        const inheritedPrompt = pendingRound.userPrompt || `Message ${rounds.length + 1}`;
+        const scheduledTaskDate = formatScheduledTaskDate(message);
+        const directoryLabel = scheduledTaskDate
+          ? `定时任务 · ${scheduledTaskDate}`
+          : inheritedPrompt;
+        const assistantMessageId = getMessageId(message);
+        pendingRound = {
+          id: typeof node.id === 'string'
+            ? node.id
+            : assistantMessageId || `assistant-${rounds.length + 1}`,
+          position: rounds.length + 1,
+          // The source pipeline uses userPrompt as the directory label.
+          // Scheduled runs have no new user prompt, so use their own
+          // creation date; old payloads without a timestamp keep the task
+          // prompt as a backwards-compatible fallback.
+          userPrompt: directoryLabel,
+          assistantContent: '',
+          preview: truncatePreview(directoryLabel),
+          messageId: null,
+          userMessageId: null,
+          assistantMessageId: null,
+          incomplete: false,
+        };
+        rounds.push(pendingRound);
+      }
 
       if (isExplicitlyIncompleteAssistantMessage(message)) {
         pendingRound.assistantContent = '';
@@ -478,7 +554,48 @@
     return false;
   }
 
-  function rememberObservedPayload(expectedConversationId, payload, requestSequence) {
+  /**
+   * ChatGPT can hydrate one long conversation as several graph-shaped
+   * payloads in the same response. Prefer the candidate that proves the
+   * richest visible branch instead of accepting whichever wrapper appears
+   * first in breadth-first traversal order.
+   */
+  function rankObservedGraphPayloads(payloads, expectedConversationId) {
+    const ranked = [];
+    for (const payload of payloads) {
+      const payloadConversationId = getPayloadConversationId(payload);
+      const currentNodeId = getPayloadCurrentNodeId(payload);
+      const mapping = readRecord(payload?.mapping);
+      if (
+        (payloadConversationId && payloadConversationId !== expectedConversationId)
+        || !currentNodeId
+        || !mapping
+      ) continue;
+
+      const branchNodes = buildBranchNodesFromMapping(mapping, currentNodeId);
+      const projection = branchNodes ? buildRoundsFromPayload(payload) : null;
+      ranked.push({
+        payload,
+        projection,
+        roundCount: projection?.rounds?.length || 0,
+        branchDepth: branchNodes?.length || 0,
+        mappingNodeCount: Object.keys(mapping).length,
+      });
+    }
+    ranked.sort((left, right) => (
+      right.roundCount - left.roundCount
+      || right.branchDepth - left.branchDepth
+      || right.mappingNodeCount - left.mappingNodeCount
+    ));
+    return ranked;
+  }
+
+  function rememberObservedPayload(
+    expectedConversationId,
+    payload,
+    requestSequence,
+    candidateProjection,
+  ) {
     if (!payload || typeof payload !== 'object') return false;
     const payloadConversationId = getPayloadConversationId(payload);
     const conversationId = payloadConversationId || expectedConversationId;
@@ -491,23 +608,39 @@
     ) return false;
 
     const previous = bridgeState.graphsByConversation.get(conversationId);
-    const isCompletePayload = buildBranchNodesFromMapping(mapping, currentNodeId) !== null;
     const isNewestCapture = !previous || requestSequence >= previous.requestSequence;
-    const mergedMapping = isCompletePayload && isNewestCapture
-      ? mapping
-      : mergeObservedMapping(previous?.mapping, mapping, !isNewestCapture);
+    // Preserve all previously observed nodes. A later response can be a
+    // structurally rooted prefix of the active branch, so replacing the
+    // mapping merely because it reaches root would erase valid history.
+    const mergedMapping = mergeObservedMapping(previous?.mapping, mapping, !isNewestCapture);
+    const regressesToKnownAncestor = Boolean(
+      previous
+      && isNewestCapture
+      && currentNodeId !== previous.currentNodeId
+      && isNodeAncestor(mergedMapping, currentNodeId, previous.currentNodeId)
+    );
     const nextCurrentNodeId = !previous
       ? currentNodeId
-      : !isNewestCapture
+      : !isNewestCapture || regressesToKnownAncestor
         ? previous.currentNodeId
-        : !isCompletePayload && isNodeAncestor(mergedMapping, currentNodeId, previous.currentNodeId)
-          ? previous.currentNodeId
-          : currentNodeId;
+        : currentNodeId;
+    const validatedProjection = (
+      !previous
+      && nextCurrentNodeId === currentNodeId
+      && candidateProjection
+    ) || buildRoundsFromPayload({
+      conversation_id: conversationId,
+      current_node: nextCurrentNodeId,
+      mapping: mergedMapping,
+    });
+    if (!validatedProjection) return false;
+
     const captureSequence = ++bridgeState.captureSequence;
     bridgeState.graphsByConversation.delete(conversationId);
     bridgeState.graphsByConversation.set(conversationId, {
       mapping: mergedMapping,
       currentNodeId: nextCurrentNodeId,
+      projection: validatedProjection,
       capturedAt: nowTs(),
       captureSequence,
       requestSequence: Math.max(requestSequence, previous?.requestSequence || 0),
@@ -517,13 +650,6 @@
       if (!oldestConversationId) break;
       bridgeState.graphsByConversation.delete(oldestConversationId);
     }
-
-    const validatedProjection = buildRoundsFromPayload({
-      conversation_id: conversationId,
-      current_node: nextCurrentNodeId,
-      mapping: mergedMapping,
-    });
-    if (!validatedProjection) return false;
 
     window.dispatchEvent(new CustomEvent(CAPTURE_EVENT, {
       detail: JSON.stringify({
@@ -543,9 +669,17 @@
     if (!contentType.toLowerCase().includes('json')) return;
     try {
       const rawPayload = await response.clone().json();
-      const payloads = findObservedGraphPayloads(rawPayload, expectedConversationId);
-      for (const payload of payloads) {
-        if (rememberObservedPayload(conversationId, payload, requestSequence)) break;
+      const payloads = rankObservedGraphPayloads(
+        findObservedGraphPayloads(rawPayload, expectedConversationId),
+        expectedConversationId,
+      );
+      for (const candidate of payloads) {
+        if (rememberObservedPayload(
+          conversationId,
+          candidate.payload,
+          requestSequence,
+          candidate.projection,
+        )) break;
       }
     } catch {
       // The host response remains untouched; an unreadable clone simply yields no observation.
@@ -596,12 +730,7 @@
   function getSnapshot(conversationId) {
     const observed = bridgeState.graphsByConversation.get(conversationId);
     if (!observed) return null;
-    const payload = {
-      conversation_id: conversationId,
-      current_node: observed.currentNodeId,
-      mapping: observed.mapping,
-    };
-    const built = buildRoundsFromPayload(payload);
+    const built = observed.projection;
     if (!built) return null;
 
     const rounds = built.rounds;
